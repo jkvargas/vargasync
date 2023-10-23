@@ -4,11 +4,12 @@ mod syscalls;
 use anyhow::{anyhow, Result};
 use bitflags::bitflags;
 use linux_raw_sys::io_uring::{
-    io_uring_params, IORING_SETUP_ATTACH_WQ, IORING_SETUP_CLAMP, IORING_SETUP_COOP_TASKRUN,
-    IORING_SETUP_CQE32, IORING_SETUP_CQSIZE, IORING_SETUP_DEFER_TASKRUN, IORING_SETUP_IOPOLL,
-    IORING_SETUP_NO_MMAP, IORING_SETUP_REGISTERED_FD_ONLY, IORING_SETUP_R_DISABLED,
-    IORING_SETUP_SINGLE_ISSUER, IORING_SETUP_SQE128, IORING_SETUP_SQPOLL, IORING_SETUP_SQ_AFF,
-    IORING_SETUP_SUBMIT_ALL, IORING_SETUP_TASKRUN_FLAG,
+    io_cqring_offsets, io_sqring_offsets, io_uring_params, IORING_SETUP_ATTACH_WQ,
+    IORING_SETUP_CLAMP, IORING_SETUP_COOP_TASKRUN, IORING_SETUP_CQE32, IORING_SETUP_CQSIZE,
+    IORING_SETUP_DEFER_TASKRUN, IORING_SETUP_IOPOLL, IORING_SETUP_NO_MMAP,
+    IORING_SETUP_REGISTERED_FD_ONLY, IORING_SETUP_R_DISABLED, IORING_SETUP_SINGLE_ISSUER,
+    IORING_SETUP_SQE128, IORING_SETUP_SQPOLL, IORING_SETUP_SQ_AFF, IORING_SETUP_SUBMIT_ALL,
+    IORING_SETUP_TASKRUN_FLAG,
 };
 use std::error::Error;
 use std::fmt::Display;
@@ -88,27 +89,71 @@ impl Error for IoUringError {
     }
 }
 
-// pub struct IoUringParams {
-//     pub sq_entries: u32,
-//     pub cq_entries: u32,
-//     pub flags: u32,
-//     pub sq_thread_cpu: u32,
-//     pub sq_thread_idle: u32,
-//     pub features: u32,
-//     pub wq_fd: u32,
-//     pub resv: [u32; 3usize],
-//     pub sq_off: io_sqring_offsets,
-//     pub cq_off: io_cqring_offsets,
-// }
-//
-// impl Into<io_uring_params> for IoUringParams {
-//     fn into(self) -> io_uring_params {
-//         io_uring_params {
-//             flags: self.flags,
-//             cq_entries
-//         }
-//     }
-// }
+pub struct IoUringParams {
+    pub sq_entries: u32,
+    pub cq_entries: u32,
+    pub flags: u32,
+    pub sq_thread_cpu: u32,
+    pub sq_thread_idle: u32,
+    pub features: u32,
+    pub wq_fd: u32,
+    pub resv: [u32; 3usize],
+    pub sq_off: IoSqRingOffsets,
+    pub cq_off: IoCqRingOffsets,
+}
+
+impl Into<io_cqring_offsets> for IoCqRingOffsets {
+    fn into(self) -> io_cqring_offsets {
+        todo!()
+    }
+}
+
+pub struct IoCqRingOffsets {
+    pub head: u32,
+    pub tail: u32,
+    pub ring_mask: u32,
+    pub ring_entries: u32,
+    pub overflow: u32,
+    pub cqes: u32,
+    pub flags: u32,
+    pub resv1: u32,
+    pub user_addr: u64,
+}
+
+impl Into<io_sqring_offsets> for IoSqRingOffsets {
+    fn into(self) -> io_sqring_offsets {
+        todo!()
+    }
+}
+
+pub struct IoSqRingOffsets {
+    pub head: u32,
+    pub tail: u32,
+    pub ring_mask: u32,
+    pub ring_entries: u32,
+    pub flags: u32,
+    pub dropped: u32,
+    pub array: u32,
+    pub resv1: u32,
+    pub user_addr: u64,
+}
+
+impl Into<io_uring_params> for IoUringParams {
+    fn into(self) -> io_uring_params {
+        io_uring_params {
+            flags: self.flags,
+            cq_entries: self.cq_entries,
+            sq_entries: self.sq_entries,
+            sq_thread_cpu: self.sq_thread_cpu,
+            sq_thread_idle: self.sq_thread_idle,
+            features: self.features,
+            wq_fd: self.wq_fd,
+            resv: self.resv,
+            sq_off: self.sq_off.into(),
+            cq_off: self.cq_off.into(),
+        }
+    }
+}
 
 pub struct IoUring {
     head: *const AtomicU32,
@@ -120,7 +165,7 @@ pub struct IoUring {
 }
 
 impl IoUring {
-    pub fn initialize(entries: u32, mut params: io_uring_params) -> Result<IoUring> {
+    pub fn initialize(entries: u32, params: IoUringParams) -> Result<IoUring> {
         let flags = IoUringSetupFlags::from_bits(params.flags).ok_or(anyhow!("error"))?;
 
         if flags.contains(IoUringSetupFlags::RegisteredFdOnly)
@@ -130,7 +175,7 @@ impl IoUring {
         }
 
         unsafe {
-            io_uring_setup(entries, &mut params);
+            io_uring_setup(entries, &mut params.into());
         }
 
         Err(anyhow!("Pal"))
