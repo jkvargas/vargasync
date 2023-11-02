@@ -184,25 +184,25 @@ impl Into<io_uring_params> for IoUringParams {
     }
 }
 
-pub struct IoUringQueue {
+pub struct IoUringQueue<'a> {
     pub(crate) head: *const AtomicU32,
     pub(crate) tail: *const AtomicU32,
     pub(crate) mask: u32,
     pub(crate) entries: u32,
     pub(crate) flags: u32,
-    pub(crate) ring: MMap,
-    // sqes: *mut QE,
+    pub(crate) ring: Option<MMap<'a>>,
+    pub(crate) qes: MMap<'a>,
 }
 
-pub struct IoUring {
-    pub(crate) send_queue: IoUringQueue,
-    pub(crate) complete_queue: IoUringQueue,
+pub struct IoUring<'a> {
+    pub(crate) send_queue: IoUringQueue<'a>,
+    pub(crate) complete_queue: IoUringQueue<'a>,
     pub(crate) flags: u32,
     pub(crate) ring_file_descriptor: OwnedFd,
 }
 
-impl IoUring {
-    pub fn initialize(entries: u32, params: IoUringParams) -> Result<IoUring> {
+impl<'a> IoUring<'a> {
+    pub fn initialize(entries: u32, params: IoUringParams) -> Result<IoUring<'a>> {
         let flags = IoUringSetupFlags::from_bits(params.flags).ok_or(anyhow!("error"))?;
 
         if flags.contains(IoUringSetupFlags::RegisteredFdOnly)
@@ -259,24 +259,28 @@ impl IoUring {
             complete_size = send_size;
         }
 
-        self.send_queue.ring = MMap::new(
+        self.send_queue.ring = Some(MMap::new(
             file_descriptor,
             IORING_OFF_SQ_RING as off_t,
             send_size as usize,
-        )?;
+        )?);
 
-        self.complete_queue.ring = MMap::new(
-            file_descriptor,
-            IORING_OFF_CQ_RING as off_t,
-            complete_size as usize,
-        )?;
+        if features.contains(IoUringFeatures::SingleMmap) {
+            self.complete_queue.ring = None;
+        } else {
+            self.complete_queue.ring = Some(MMap::new(
+                file_descriptor,
+                IORING_OFF_CQ_RING as off_t,
+                complete_size as usize,
+            )?);
+        }
 
         size = size_of::<io_uring_sqe>();
         if setup_flags.contains(IoUringSetupFlags::Sqe128) {
             size += 64;
         }
 
-        let sqes = MMap::new(
+        self.send_queue.qes = MMap::new(
             file_descriptor,
             IORING_OFF_SQES as off_t,
             size * io_uring_params.sq_entries as usize,

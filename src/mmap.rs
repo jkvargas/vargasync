@@ -4,21 +4,24 @@ use libc::{
     c_void, exit, mmap, munmap, off_t, strerror, MAP_FAILED, MAP_POPULATE, MAP_SHARED, PROT_READ,
     PROT_WRITE,
 };
+use linux_raw_sys::io_uring::io_uring_sqe;
 use log::debug;
 use std::{
     ffi::CStr,
+    marker::PhantomData,
     os::fd::{AsRawFd, OwnedFd},
     ptr::{null_mut, NonNull},
 };
 
 const UNMAP_FAILED: i32 = -1;
 
-pub(crate) struct MMap {
+pub(crate) struct MMap<'a> {
     pub(crate) addr: NonNull<c_void>,
     pub(crate) len: usize,
+    pub(crate) __owns_addr: PhantomData<&'a io_uring_sqe>,
 }
 
-impl MMap {
+impl<'a> MMap<'a> {
     pub(crate) fn new(fd: &OwnedFd, offset: off_t, len: usize) -> Result<Self> {
         unsafe {
             match mmap(
@@ -37,14 +40,22 @@ impl MMap {
                 }
                 addr => {
                     let result = NonNull::new_unchecked(addr);
-                    Ok(Self { addr: result, len })
+                    Ok(Self {
+                        addr: result,
+                        len,
+                        __owns_addr: PhantomData::default(),
+                    })
                 }
             }
         }
     }
+
+    pub(crate) unsafe fn as_io_uring_sqe(&self) -> &'a io_uring_sqe {
+        std::mem::transmute(self.addr)
+    }
 }
 
-impl Drop for MMap {
+impl<'a> Drop for MMap<'a> {
     fn drop(&mut self) {
         unsafe {
             let error_code = munmap(self.addr.as_ptr(), self.len);
