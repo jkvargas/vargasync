@@ -7,6 +7,8 @@ edition = "2021"
 
 [dependencies]
 linux-raw-sys = {  version = "0.*", features = ["io_uring", "general"] }
-anyhow = "1.*"
+anyhow = "*"
 bitflags = "2.*"
 libc = "0.2.*"
+log = "0.4.*"
+errno = "0.3.*"

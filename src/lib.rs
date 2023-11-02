@@ -1,20 +1,49 @@
 mod arch;
+mod mmap;
 mod syscalls;
 
 use anyhow::{anyhow, Result};
 use bitflags::bitflags;
+use libc::off_t;
 use linux_raw_sys::io_uring::{
-    io_cqring_offsets, io_sqring_offsets, io_uring_params, IORING_SETUP_ATTACH_WQ,
-    IORING_SETUP_CLAMP, IORING_SETUP_COOP_TASKRUN, IORING_SETUP_CQE32, IORING_SETUP_CQSIZE,
-    IORING_SETUP_DEFER_TASKRUN, IORING_SETUP_IOPOLL, IORING_SETUP_NO_MMAP,
+    io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_params, io_uring_sqe,
+    IORING_FEAT_CQE_SKIP, IORING_FEAT_CUR_PERSONALITY, IORING_FEAT_EXT_ARG, IORING_FEAT_FAST_POLL,
+    IORING_FEAT_LINKED_FILE, IORING_FEAT_NATIVE_WORKERS, IORING_FEAT_NODROP,
+    IORING_FEAT_POLL_32BITS, IORING_FEAT_REG_REG_RING, IORING_FEAT_RSRC_TAGS,
+    IORING_FEAT_RW_CUR_POS, IORING_FEAT_SINGLE_MMAP, IORING_FEAT_SQPOLL_NONFIXED,
+    IORING_FEAT_SUBMIT_STABLE, IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    IORING_SETUP_ATTACH_WQ, IORING_SETUP_CLAMP, IORING_SETUP_COOP_TASKRUN, IORING_SETUP_CQE32,
+    IORING_SETUP_CQSIZE, IORING_SETUP_DEFER_TASKRUN, IORING_SETUP_IOPOLL, IORING_SETUP_NO_MMAP,
     IORING_SETUP_REGISTERED_FD_ONLY, IORING_SETUP_R_DISABLED, IORING_SETUP_SINGLE_ISSUER,
     IORING_SETUP_SQE128, IORING_SETUP_SQPOLL, IORING_SETUP_SQ_AFF, IORING_SETUP_SUBMIT_ALL,
     IORING_SETUP_TASKRUN_FLAG,
 };
+use mmap::MMap;
 use std::error::Error;
 use std::fmt::Display;
+use std::mem::size_of;
+use std::os::fd::OwnedFd;
 use std::sync::atomic::AtomicU32;
 use syscalls::io_uring_setup;
+
+bitflags! {
+    pub struct IoUringFeatures : u32 {
+        const SingleMmap = IORING_FEAT_SINGLE_MMAP;
+        const NoDrop = IORING_FEAT_NODROP;
+        const SubmitStable = IORING_FEAT_SUBMIT_STABLE;
+        const RwCurPos = IORING_FEAT_RW_CUR_POS;
+        const CurPersonality = IORING_FEAT_CUR_PERSONALITY;
+        const FastPoll = IORING_FEAT_FAST_POLL;
+        const Poll32Bits = IORING_FEAT_POLL_32BITS;
+        const SqPollNonFixed = IORING_FEAT_SQPOLL_NONFIXED;
+        const ExtArg = IORING_FEAT_EXT_ARG;
+        const NativeWorkers = IORING_FEAT_NATIVE_WORKERS;
+        const RsRcTags = IORING_FEAT_RSRC_TAGS;
+        const CqeSkip = IORING_FEAT_CQE_SKIP;
+        const LinkedFile = IORING_FEAT_LINKED_FILE;
+        const RegRegRing = IORING_FEAT_REG_REG_RING;
+    }
+}
 
 bitflags! {
     pub struct IoUringSetupFlags: u32 {
@@ -155,13 +184,21 @@ impl Into<io_uring_params> for IoUringParams {
     }
 }
 
-pub struct IoUring {
-    head: *const AtomicU32,
-    tail: *const AtomicU32,
-    mask: u32,
-    entries: u32,
-    flags: u32,
+pub struct IoUringQueue {
+    pub(crate) head: *const AtomicU32,
+    pub(crate) tail: *const AtomicU32,
+    pub(crate) mask: u32,
+    pub(crate) entries: u32,
+    pub(crate) flags: u32,
+    pub(crate) ring: MMap,
     // sqes: *mut QE,
+}
+
+pub struct IoUring {
+    pub(crate) send_queue: IoUringQueue,
+    pub(crate) complete_queue: IoUringQueue,
+    pub(crate) flags: u32,
+    pub(crate) ring_file_descriptor: OwnedFd,
 }
 
 impl IoUring {
@@ -174,11 +211,78 @@ impl IoUring {
             return Err(anyhow!(IoUringError::InvalidArgument));
         }
 
-        unsafe {
+        let fd = unsafe {
             io_uring_setup(entries, &mut params.into());
+        };
+
+        if !flags.contains(IoUringSetupFlags::NoMmap) {}
+
+        let io_uring = IoUring {
+            send_queue: todo!(),
+            complete_queue: todo!(),
+            flags: todo!(),
+            ring_file_descriptor: todo!(),
+        };
+
+        Ok(io_uring)
+    }
+
+    /*
+     * For users that want to specify sq_thread_cpu or sq_thread_idle, this
+     * interface is a convenient helper for mmap()ing the rings.
+     * Returns -errno on error, or zero on success.  On success, 'ring'
+     * contains the necessary information to read/write to the rings.
+     */
+    fn io_uring_queue_mmap(
+        &mut self,
+        file_descriptor: &OwnedFd,
+        setup_flags: &IoUringSetupFlags,
+        io_uring_params: &IoUringParams,
+    ) -> Result<()> {
+        let mut size = size_of::<io_uring_cqe>();
+        if setup_flags.contains(IoUringSetupFlags::Cqe32) {
+            size += size_of::<io_uring_cqe>();
         }
 
-        Err(anyhow!("Pal"))
+        let mut send_size =
+            io_uring_params.sq_off.array + io_uring_params.sq_entries * size_of::<u32>() as u32;
+        let mut complete_size =
+            io_uring_params.cq_off.cqes + io_uring_params.cq_entries * size as u32;
+
+        let features =
+            IoUringFeatures::from_bits(io_uring_params.features).ok_or(anyhow!("error"))?;
+
+        if features.contains(IoUringFeatures::SingleMmap) {
+            if complete_size > send_size {
+                send_size = complete_size;
+            }
+            complete_size = send_size;
+        }
+
+        self.send_queue.ring = MMap::new(
+            file_descriptor,
+            IORING_OFF_SQ_RING as off_t,
+            send_size as usize,
+        )?;
+
+        self.complete_queue.ring = MMap::new(
+            file_descriptor,
+            IORING_OFF_CQ_RING as off_t,
+            complete_size as usize,
+        )?;
+
+        size = size_of::<io_uring_sqe>();
+        if setup_flags.contains(IoUringSetupFlags::Sqe128) {
+            size += 64;
+        }
+
+        let sqes = MMap::new(
+            file_descriptor,
+            IORING_OFF_SQES as off_t,
+            size * io_uring_params.sq_entries as usize,
+        )?;
+
+        Ok(())
     }
 }
 
