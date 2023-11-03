@@ -184,19 +184,19 @@ impl Into<io_uring_params> for IoUringParams {
     }
 }
 
-pub struct IoUringQueue<'a> {
+pub struct IoUringQueue<'a, TRing> {
     pub(crate) head: *const AtomicU32,
     pub(crate) tail: *const AtomicU32,
     pub(crate) mask: u32,
     pub(crate) entries: u32,
     pub(crate) flags: u32,
-    pub(crate) ring: Option<MMap<'a>>,
-    pub(crate) qes: MMap<'a>,
+    pub(crate) ring: Option<MMap<'a, TRing>>,
+    pub(crate) qes: MMap<'a, TRing>,
 }
 
 pub struct IoUring<'a> {
-    pub(crate) send_queue: IoUringQueue<'a>,
-    pub(crate) complete_queue: IoUringQueue<'a>,
+    pub(crate) send_queue: IoUringQueue<'a, io_uring_sqe>,
+    pub(crate) complete_queue: IoUringQueue<'a, io_uring_cqe>,
     pub(crate) flags: u32,
     pub(crate) ring_file_descriptor: OwnedFd,
 }
