@@ -122,7 +122,7 @@ pub struct IoUringParams {
     pub cq_off: IoCqRingOffsets,
 }
 
-impl Into<io_cqring_offsets> for IoCqRingOffsets {
+impl Into<io_cqring_offsets> for &IoCqRingOffsets {
     fn into(self) -> io_cqring_offsets {
         todo!()
     }
@@ -140,7 +140,7 @@ pub struct IoCqRingOffsets {
     pub user_addr: u64,
 }
 
-impl Into<io_sqring_offsets> for IoSqRingOffsets {
+impl Into<io_sqring_offsets> for &IoSqRingOffsets {
     fn into(self) -> io_sqring_offsets {
         todo!()
     }
@@ -158,7 +158,7 @@ pub struct IoSqRingOffsets {
     pub user_addr: u64,
 }
 
-impl Into<io_uring_params> for IoUringParams {
+impl Into<io_uring_params> for &IoUringParams {
     fn into(self) -> io_uring_params {
         io_uring_params {
             flags: self.flags,
@@ -169,14 +169,14 @@ impl Into<io_uring_params> for IoUringParams {
             features: self.features,
             wq_fd: self.wq_fd,
             resv: self.resv,
-            sq_off: self.sq_off.into(),
-            cq_off: self.cq_off.into(),
+            sq_off: (&self.sq_off).into(),
+            cq_off: (&self.cq_off).into(),
         }
     }
 }
 
 pub struct IoUringQueue<'a, TRing> {
-    pub(crate) head: NonNull<c_void>, //*const AtomicU32,
+    pub(crate) head: NonNull<c_void>,
     pub(crate) tail: NonNull<c_void>,
     pub(crate) mask: u32,
     pub(crate) entries: u32,
@@ -202,20 +202,11 @@ impl<'a> IoUring<'a> {
             return Err(anyhow!(IoUringError::InvalidArgument));
         }
 
-        let fd = unsafe {
-            io_uring_setup(entries, &mut params.into());
-        };
+        let fd = unsafe { io_uring_setup(entries, &mut (&params).into()) };
 
         if !flags.contains(IoUringSetupFlags::NoMmap) {}
 
-        let io_uring = IoUring {
-            send_queue: todo!(),
-            complete_queue: todo!(),
-            flags: todo!(),
-            ring_file_descriptor: todo!(),
-        };
-
-        Ok(io_uring)
+        Ok(io_uring_queue_mmap(fd, &flags, &params)?)
     }
 }
 
@@ -226,10 +217,10 @@ impl<'a> IoUring<'a> {
  * contains the necessary information to read/write to the rings.
  */
 fn io_uring_queue_mmap<'a>(
-    file_descriptor: &OwnedFd,
+    file_descriptor: OwnedFd,
     setup_flags: &IoUringSetupFlags,
     io_uring_params: &IoUringParams,
-) -> Result<()> {
+) -> Result<IoUring<'a>> {
     let mut size = size_of::<io_uring_cqe>();
     if setup_flags.contains(IoUringSetupFlags::Cqe32) {
         size += size_of::<io_uring_cqe>();
@@ -249,7 +240,7 @@ fn io_uring_queue_mmap<'a>(
     }
 
     let send_queue_ring: Option<MMap<'a, io_uring_sqe>> = Some(MMap::new(
-        file_descriptor,
+        &file_descriptor,
         IORING_OFF_SQ_RING as off_t,
         send_size as usize,
     )?);
@@ -259,7 +250,7 @@ fn io_uring_queue_mmap<'a>(
             None
         } else {
             Some(MMap::new(
-                file_descriptor,
+                &file_descriptor,
                 IORING_OFF_CQ_RING as off_t,
                 complete_size as usize,
             )?)
@@ -271,7 +262,7 @@ fn io_uring_queue_mmap<'a>(
     }
 
     let send_queue_qes: MMap<'a, io_uring_sqe> = MMap::new(
-        file_descriptor,
+        &file_descriptor,
         IORING_OFF_SQES as off_t,
         size * io_uring_params.sq_entries as usize,
     )?;
@@ -283,7 +274,12 @@ fn io_uring_queue_mmap<'a>(
         send_queue_qes,
     )?;
 
-    Ok(())
+    Ok(IoUring {
+        send_queue: queues.sq,
+        complete_queue: queues.cq,
+        flags: io_uring_params.flags,
+        ring_file_descriptor: file_descriptor,
+    })
 }
 
 fn io_uring_setup_pointers<'a>(
@@ -352,7 +348,7 @@ fn io_uring_setup_pointers<'a>(
     })
 }
 
-pub(crate) struct SetupPointersResult<'a> {
+struct SetupPointersResult<'a> {
     pub(crate) cq: IoUringQueue<'a, io_uring_cqe>,
     pub(crate) sq: IoUringQueue<'a, io_uring_sqe>,
 }
