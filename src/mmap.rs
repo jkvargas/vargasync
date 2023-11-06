@@ -21,6 +21,14 @@ pub(crate) struct MMap<'a, T> {
 }
 
 impl<'a, T> MMap<'a, T> {
+    pub(crate) fn new_with_address(addr: NonNull<c_void>, len: usize) -> Self {
+        MMap {
+            addr,
+            len,
+            __owns_addr: PhantomData::default(),
+        }
+    }
+
     pub(crate) fn new(fd: &OwnedFd, offset: off_t, len: usize) -> Result<Self> {
         unsafe {
             match mmap(
@@ -39,11 +47,7 @@ impl<'a, T> MMap<'a, T> {
                 }
                 addr => {
                     let result = NonNull::new_unchecked(addr);
-                    Ok(Self {
-                        addr: result,
-                        len,
-                        __owns_addr: PhantomData::default(),
-                    })
+                    Ok(Self::new_with_address(result, len))
                 }
             }
         }
@@ -55,6 +59,10 @@ impl<'a, T> MMap<'a, T> {
 
     pub(crate) fn add_offset(&self, offset: usize) -> Option<NonNull<c_void>> {
         NonNull::new(unsafe { self.addr.as_ptr().add(offset) })
+    }
+
+    pub(crate) fn get_len(&self) -> usize {
+        self.len
     }
 }
 
