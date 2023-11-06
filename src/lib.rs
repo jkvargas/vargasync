@@ -4,7 +4,7 @@ mod syscalls;
 
 use anyhow::{anyhow, Result};
 use bitflags::bitflags;
-use libc::off_t;
+use libc::{c_void, off_t};
 use linux_raw_sys::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_params, io_uring_sqe,
     IORING_FEAT_CQE_SKIP, IORING_FEAT_CUR_PERSONALITY, IORING_FEAT_EXT_ARG, IORING_FEAT_FAST_POLL,
@@ -23,7 +23,7 @@ use std::error::Error;
 use std::fmt::Display;
 use std::mem::size_of;
 use std::os::fd::OwnedFd;
-use std::sync::atomic::AtomicU32;
+use std::ptr::NonNull;
 use syscalls::io_uring_setup;
 
 bitflags! {
@@ -185,8 +185,8 @@ impl Into<io_uring_params> for IoUringParams {
 }
 
 pub struct IoUringQueue<'a, TRing> {
-    pub(crate) head: *const AtomicU32,
-    pub(crate) tail: *const AtomicU32,
+    pub(crate) head: NonNull<c_void>, //*const AtomicU32,
+    pub(crate) tail: NonNull<c_void>,
     pub(crate) mask: u32,
     pub(crate) entries: u32,
     pub(crate) flags: u32,
@@ -234,7 +234,6 @@ impl<'a> IoUring<'a> {
      * contains the necessary information to read/write to the rings.
      */
     fn io_uring_queue_mmap(
-        &mut self,
         file_descriptor: &OwnedFd,
         setup_flags: &IoUringSetupFlags,
         io_uring_params: &IoUringParams,
@@ -259,32 +258,75 @@ impl<'a> IoUring<'a> {
             complete_size = send_size;
         }
 
-        self.send_queue.ring = Some(MMap::new(
+        let send_queue_ring: Option<MMap<'_, io_uring_sqe>> = Some(MMap::new(
             file_descriptor,
             IORING_OFF_SQ_RING as off_t,
             send_size as usize,
         )?);
 
-        if features.contains(IoUringFeatures::SingleMmap) {
-            self.complete_queue.ring = None;
-        } else {
-            self.complete_queue.ring = Some(MMap::new(
-                file_descriptor,
-                IORING_OFF_CQ_RING as off_t,
-                complete_size as usize,
-            )?);
-        }
+        let complete_queue_ring: Option<MMap<'_, io_uring_cqe>> =
+            if features.contains(IoUringFeatures::SingleMmap) {
+                None
+            } else {
+                Some(MMap::new(
+                    file_descriptor,
+                    IORING_OFF_CQ_RING as off_t,
+                    complete_size as usize,
+                )?)
+            };
 
         size = size_of::<io_uring_sqe>();
         if setup_flags.contains(IoUringSetupFlags::Sqe128) {
             size += 64;
         }
 
-        self.send_queue.qes = MMap::new(
+        let send_queue_qes: MMap<'_, io_uring_sqe> = MMap::new(
             file_descriptor,
             IORING_OFF_SQES as off_t,
             size * io_uring_params.sq_entries as usize,
         )?;
+
+        Self::io_uring_setup_pointers(
+            io_uring_params,
+            send_queue_ring,
+            complete_queue_ring,
+            send_queue_qes,
+        );
+
+        Ok(())
+    }
+
+    fn io_uring_setup_pointers(
+        params: &IoUringParams,
+        sq: Option<MMap<'_, io_uring_sqe>>,
+        cq: Option<MMap<'_, io_uring_cqe>>,
+        sqes: MMap<'_, io_uring_sqe>,
+    ) -> Result<()> {
+        let sq_unw = sq.as_ref().unwrap();
+        let cq_unw = cq.unwrap();
+
+        let mut send_io_uring = IoUringQueue {
+            head: sq_unw
+                .add_offset(params.sq_off.head as usize)
+                .ok_or(anyhow!("could not set the head for send_io_uring"))?,
+            tail: sq_unw
+                .add_offset(params.sq_off.head as usize)
+                .ok_or(anyhow!("could not set head pro completion queue"))?,
+            mask: sq_unw
+                .add_offset(params.sq_off.ring_mask as usize)
+                .ok_or(anyhow!("could not set ring mask"))?
+                .as_ptr() as u32,
+            entries: sq_unw
+                .add_offset(params.sq_off.ring_entries as usize)
+                .ok_or(anyhow!("could not set entries"))?
+                .as_ptr() as u32,
+            flags: sq_unw
+                .add_offset(params.sq_off.flags as usize)
+                .ok_or(anyhow!("could not set flags"))?
+                .as_ptr() as u32,
+            ring: sq,
+            qes: sqes,
+        };
 
         Ok(())
     }
@@ -294,7 +336,7 @@ impl<'a> IoUring<'a> {
 mod when_initializing_io_uring {
     use linux_raw_sys::io_uring::{io_cqring_offsets, io_sqring_offsets, io_uring_params};
 
-    use crate::IoUring;
+    use crate::{IoUring, IoUringParams};
 
     #[test]
     pub fn io_uring_setup_does_not_throw() {
@@ -330,6 +372,6 @@ mod when_initializing_io_uring {
                 user_addr: 0,
             },
         };
-        let io_uring = IoUring::initialize(1, params);
+        let io_uring = IoUring::initialize(1, IoUringParams::from(params));
     }
 }

@@ -15,9 +15,9 @@ use std::{
 const UNMAP_FAILED: i32 = -1;
 
 pub(crate) struct MMap<'a, T> {
-    pub(crate) addr: NonNull<c_void>,
-    pub(crate) len: usize,
-    pub(crate) __owns_addr: PhantomData<&'a T>,
+    addr: NonNull<c_void>,
+    len: usize,
+    __owns_addr: PhantomData<&'a T>,
 }
 
 impl<'a, T> MMap<'a, T> {
@@ -49,8 +49,12 @@ impl<'a, T> MMap<'a, T> {
         }
     }
 
-    pub(crate) unsafe fn as_io_uring_sqe(&self) -> &'a T {
-        std::mem::transmute(self.addr)
+    pub(crate) unsafe fn as_qe(&self) -> &'a T {
+        self.addr.cast().as_ref()
+    }
+
+    pub(crate) fn add_offset(&self, offset: usize) -> Option<NonNull<c_void>> {
+        NonNull::new(unsafe { self.addr.as_ptr().add(offset) })
     }
 }
 
