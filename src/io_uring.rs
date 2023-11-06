@@ -124,7 +124,17 @@ pub struct IoUringParams {
 
 impl Into<io_cqring_offsets> for &IoCqRingOffsets {
     fn into(self) -> io_cqring_offsets {
-        todo!()
+        io_cqring_offsets {
+            head: self.head,
+            tail: self.tail,
+            ring_mask: self.ring_mask,
+            ring_entries: self.ring_entries,
+            overflow: self.overflow,
+            cqes: self.cqes,
+            flags: self.flags,
+            resv1: self.resv1,
+            user_addr: self.user_addr,
+        }
     }
 }
 
@@ -142,7 +152,17 @@ pub struct IoCqRingOffsets {
 
 impl Into<io_sqring_offsets> for &IoSqRingOffsets {
     fn into(self) -> io_sqring_offsets {
-        todo!()
+        io_sqring_offsets {
+            head: self.head,
+            tail: self.tail,
+            ring_mask: self.ring_mask,
+            ring_entries: self.ring_entries,
+            flags: self.flags,
+            dropped: self.dropped,
+            array: self.array,
+            resv1: self.resv1,
+            user_addr: self.user_addr,
+        }
     }
 }
 
