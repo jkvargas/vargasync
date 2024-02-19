@@ -14,13 +14,13 @@ use std::{
 
 const UNMAP_FAILED: i32 = -1;
 
-pub(crate) struct MMap<'a, T> {
+pub(crate) struct MMap<'a> {
     addr: NonNull<c_void>,
     len: usize,
-    __owns_addr: PhantomData<&'a T>,
+    __owns_addr: PhantomData<&'a c_void>,
 }
 
-impl<'a, T> MMap<'a, T> {
+impl<'a> MMap<'a> {
     pub(crate) fn new_with_address(addr: NonNull<c_void>, len: usize) -> Self {
         MMap {
             addr,
@@ -53,9 +53,9 @@ impl<'a, T> MMap<'a, T> {
         }
     }
 
-    pub(crate) unsafe fn as_qe(&self) -> &'a T {
-        self.addr.cast().as_ref()
-    }
+    // pub(crate) unsafe fn as_qe(&self) -> &'a c_void {
+    //     self.addr.cast().as_ref()
+    // }
 
     pub(crate) fn add_offset(&self, offset: usize) -> Option<NonNull<c_void>> {
         NonNull::new(unsafe { self.addr.as_ptr().add(offset) })
@@ -66,7 +66,7 @@ impl<'a, T> MMap<'a, T> {
     }
 }
 
-impl<'a, T> Drop for MMap<'a, T> {
+impl<'a> Drop for MMap<'a> {
     fn drop(&mut self) {
         unsafe {
             let error_code = munmap(self.addr.as_ptr(), self.len);
