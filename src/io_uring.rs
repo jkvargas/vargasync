@@ -217,12 +217,13 @@ pub struct IoUringSendQueue<'a> {
 
 pub(crate) enum IoUringQueueOwnership<'a> {
     Owns(MMap<'a>),
-    Refers(&'a MMap<'a>),
+    Refers,
 }
 
 pub(crate) fn setup_cq_ring<'a>(
     map: IoUringQueueOwnership<'a>,
     params: &io_uring_params,
+    send_ring: &MMap<'a>,
 ) -> Result<IoUringCompleteQueue<'a>> {
     let (head, tail, mask, entries, flags, cqes) = match &map {
         IoUringQueueOwnership::Owns(ring) => {
@@ -245,23 +246,23 @@ pub(crate) fn setup_cq_ring<'a>(
                 .add_offset(params.cq_off.cqes as usize)
                 .ok_or(anyhow!("could not set cqes"))?)
         },
-        IoUringQueueOwnership::Refers(ring) => {
-            ((*ring)
+        IoUringQueueOwnership::Refers => {
+            (send_ring
                  .add_offset(params.cq_off.head as usize)
                  .ok_or(anyhow!("could not set the head for send_io_uring"))?,
-             (*ring)
+            send_ring
                  .add_offset(params.cq_off.tail as usize)
                  .ok_or(anyhow!("could not set head pro completion queue"))?,
-             (*ring)
+            send_ring
                  .add_offset(params.cq_off.ring_mask as usize)
                  .ok_or(anyhow!("could not set ring mask"))?,
-             (*ring)
+            send_ring
                  .add_offset(params.cq_off.ring_entries as usize)
                  .ok_or(anyhow!("could not set entries"))?,
-             (*ring)
+            send_ring
                  .add_offset(params.cq_off.flags as usize)
                  .ok_or(anyhow!("could not set flags"))?,
-             (*ring)
+            send_ring
                  .add_offset(params.cq_off.cqes as usize)
                  .ok_or(anyhow!("could not set cqes"))?)
         },
@@ -279,9 +280,9 @@ pub(crate) fn setup_cq_ring<'a>(
 }
 
 pub(crate) fn setup_send_ring<'a>(
-    map: MMap,
+    map: MMap<'a>,
     params: &io_uring_params,
-    sqes: MMap,
+    sqes: MMap<'a>,
 ) -> Result<IoUringSendQueue<'a>> {
     let head = map
         .add_offset(params.sq_off.head as usize)
@@ -364,8 +365,15 @@ fn io_uring_queue_mmap<'a>(
         send_ring_size,
     )?;
 
+    let size = io_uring_params.sq_entries as usize * size_of::<io_uring_sqe>();
+
+    let send_queue_qes =
+        MMap::new(&file_descriptor, IORING_OFF_SQES as off_t, size)?;
+
+    let send_queue = setup_send_ring(send_ring, io_uring_params, send_queue_qes)?;
+
     let complete_ring = if io_uring_params.features as u32 & IORING_FEAT_SINGLE_MMAP > 0 {
-        IoUringQueueOwnership::Refers(&send_ring)
+        IoUringQueueOwnership::Refers
     } else {
         IoUringQueueOwnership::Owns(MMap::new(
             &file_descriptor,
@@ -374,14 +382,7 @@ fn io_uring_queue_mmap<'a>(
         )?)
     };
 
-    let size = io_uring_params.sq_entries as usize * size_of::<io_uring_sqe>();
-
-    let send_queue_qes =
-        MMap::new(&file_descriptor, IORING_OFF_SQES as off_t, size)?;
-
-    let complete_queue = setup_cq_ring(complete_ring, io_uring_params)?;
-
-    let send_queue = setup_send_ring(send_ring, io_uring_params, send_queue_qes)?;
+    let complete_queue = setup_cq_ring(complete_ring, io_uring_params, &send_queue.ring)?;
 
     Ok(IoUring {
         send_queue,

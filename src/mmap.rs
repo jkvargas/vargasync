@@ -53,10 +53,6 @@ impl<'a> MMap<'a> {
         }
     }
 
-    // pub(crate) unsafe fn as_qe(&self) -> &'a c_void {
-    //     self.addr.cast().as_ref()
-    // }
-
     pub(crate) fn add_offset(&self, offset: usize) -> Option<NonNull<c_void>> {
         NonNull::new(unsafe { self.addr.as_ptr().add(offset) })
     }
